@@ -1,0 +1,90 @@
+name: minio-openmaxio
+
+services:
+  # ---------------------------------------------------------------------------
+  # MinIO server — S3-compatible object storage (the data plane).
+  # Point your apps / SDKs at port 9000. This is your "R2 endpoint".
+  # ---------------------------------------------------------------------------
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z
+    container_name: minio
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # OpenMaxIO provides the full management UI, so MinIO's own built-in
+      # basic object browser is disabled. The S3 API AND the admin API
+      # (which the console talks to) stay available on port 9000.
+      MINIO_BROWSER: "off"
+    ports:
+      - "9000:9000"          # S3 API endpoint — use this in your S3 clients
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # console-init — one-shot provisioner. Waits for MinIO to be healthy, then
+  # creates the dedicated `console` admin user + `consoleAdmin` policy that the
+  # console logs in with (instead of root). Idempotent: runs on every `up`,
+  # re-applies the user from .env, then exits. Logic lives in ./bootstrap.sh.
+  # Edit the credentials via CONSOLE_ACCESS_KEY / CONSOLE_SECRET_KEY in .env.
+  # ---------------------------------------------------------------------------
+  console-init:
+    # minio/mc, pinned by digest (== :latest as of 2025-10; images are frozen).
+    image: quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    container_name: minio-console-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      CONSOLE_ACCESS_KEY: ${CONSOLE_ACCESS_KEY}
+      CONSOLE_SECRET_KEY: ${CONSOLE_SECRET_KEY}
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
+    volumes:
+      - ./bootstrap.sh:/bootstrap.sh:ro
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # OpenMaxIO console — the full admin dashboard (buckets, users, policies,
+  # access keys, upload/browse). Built from source by default (see Dockerfile).
+  # ---------------------------------------------------------------------------
+  console:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        OPENMAXIO_REF: v1.7.6
+    # --- Prefer not to build? Use a community prebuilt image instead. ---
+    # Comment out the entire `build:` block above and uncomment these two lines.
+    # Trade-off: instant, but it's an UNVETTED third-party image that will hold
+    # admin-level access to your storage. Pin by digest and verify before trusting.
+    #   image: khoa0702/openmaxio-console:latest
+    #   command: ["server", "--port", "9090"]
+    container_name: openmaxio-console
+    environment:
+      CONSOLE_MINIO_SERVER: "http://minio:9000"
+      # Secrets used to encrypt the console's session JWTs. Set to long randoms.
+      CONSOLE_PBKDF_PASSPHRASE: ${CONSOLE_PBKDF_PASSPHRASE}
+      CONSOLE_PBKDF_SALT: ${CONSOLE_PBKDF_SALT}
+    ports:
+      - "9090:9090"          # Admin console — open this in your browser
+    depends_on:
+      minio:
+        condition: service_healthy
+      # Wait for the console user to be provisioned. If you'd rather log in as
+      # root and skip auto-provisioning, remove this block and the console-init
+      # service above. (A failed console-init then blocks the console — that's
+      # intentional fail-fast on a bad CONSOLE_SECRET_KEY.)
+      console-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  minio-data:
