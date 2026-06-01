@@ -18,7 +18,6 @@ Cloudflare R2 — that you run with Docker Compose. Two services:
 |------|---------|
 | `docker-compose.yml` | The stack (minio + console-init + console). |
 | `Dockerfile` | Builds the OpenMaxIO console from source. |
-| `bootstrap.sh` | Provisions the `console` admin user; run by the `console-init` service. |
 | `.env.example` | Template for credentials + console secrets. Copy to `.env`. |
 | `.env` | Real secrets — **gitignored, never commit**. |
 | `README.md` | Human setup guide, usage, hardening, caveats. |
@@ -65,16 +64,22 @@ docker compose down            # stop (add -v to also wipe the data volume)
   available on 9000 regardless.
 - The console requires `CONSOLE_MINIO_SERVER` plus `CONSOLE_PBKDF_PASSPHRASE` and
   `CONSOLE_PBKDF_SALT` (session-JWT encryption). All secrets live in `.env`.
-- **`console-init`** (one-shot, `quay.io/minio/mc` pinned by digest, runs `bootstrap.sh`)
-  provisions a dedicated non-root admin user from `CONSOLE_ACCESS_KEY` /
-  `CONSOLE_SECRET_KEY` after MinIO is healthy, then exits. It's idempotent and
-  re-applies the secret each `up`, so `.env` is the source of truth. It attaches
-  MinIO's **built-in** `consoleAdmin` policy (admin:* + kms:* + s3:*) — don't add a
-  redundant custom policy of the same name; the builtin shadows it. `console`
+- **`console-init`** (one-shot, `quay.io/minio/mc` pinned by digest) provisions a
+  dedicated non-root admin user from `CONSOLE_ACCESS_KEY` / `CONSOLE_SECRET_KEY`
+  after MinIO is healthy, then exits. It's idempotent and re-applies the secret
+  each `up`, so `.env` is the source of truth. It attaches MinIO's **built-in**
+  `consoleAdmin` policy (admin:* + kms:* + s3:*) — don't add a redundant custom
+  policy of the same name; the builtin shadows it. `console`
   `depends_on console-init: service_completed_successfully`, so a bad
   `CONSOLE_SECRET_KEY` fails fast and blocks the console (intentional). Root creds
   are only for bootstrap, not day-to-day login. Every secret in `.env` must be a
   distinct random — never reuse one value across fields.
+- **The provisioning script is inlined** in the `console-init` `command` (not a
+  mounted file), so it travels with the compose file and deploys anywhere. Don't
+  switch it back to a bind-mounted `./bootstrap.sh`: on a PaaS like Coolify the
+  source path often isn't present, and Docker silently creates `/bootstrap.sh` as
+  a **directory**, so the container dies with `/bootstrap.sh: Is a directory`. In
+  the inlined script, shell variables use `$$` to escape Compose interpolation.
 - Runtime image for the console is `distroless/static` (`:nonroot`). If the console
   fails at startup needing a writable home, drop the `:nonroot` tag.
 
@@ -85,8 +90,8 @@ docker compose down            # stop (add -v to also wipe the data volume)
 2. **Backups** for the `minio-data` volume (that's where all objects live).
 3. Consider migrating the MinIO image to a maintained build (see constraints above).
 
-Done: dedicated non-root console user is now auto-provisioned by `console-init` /
-`bootstrap.sh` (was a manual `mc` step).
+Done: dedicated non-root console user is now auto-provisioned by the `console-init`
+service (inlined script; was a manual `mc` step).
 
 ## Conventions
 

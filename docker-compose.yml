@@ -29,10 +29,15 @@ services:
 
   # ---------------------------------------------------------------------------
   # console-init — one-shot provisioner. Waits for MinIO to be healthy, then
-  # creates the dedicated `console` admin user + `consoleAdmin` policy that the
-  # console logs in with (instead of root). Idempotent: runs on every `up`,
-  # re-applies the user from .env, then exits. Logic lives in ./bootstrap.sh.
+  # creates the dedicated `console` admin user and attaches MinIO's built-in
+  # `consoleAdmin` policy (the user the console logs in with, instead of root).
+  # Idempotent: runs on every `up`, re-applies the user from .env, then exits.
   # Edit the credentials via CONSOLE_ACCESS_KEY / CONSOLE_SECRET_KEY in .env.
+  #
+  # The script is inlined (not a mounted file) so it travels with the compose
+  # file and works on any host / PaaS (Coolify, etc.). NOTE: `$$` escapes
+  # Compose's own variable interpolation so the shell reads the container's
+  # runtime env; single `$` in `environment:` below IS interpolated from .env.
   # ---------------------------------------------------------------------------
   console-init:
     # minio/mc, pinned by digest (== :latest as of 2025-10; images are frozen).
@@ -46,9 +51,23 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       CONSOLE_ACCESS_KEY: ${CONSOLE_ACCESS_KEY}
       CONSOLE_SECRET_KEY: ${CONSOLE_SECRET_KEY}
-    entrypoint: ["/bin/sh", "/bootstrap.sh"]
-    volumes:
-      - ./bootstrap.sh:/bootstrap.sh:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        : "$${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}"
+        : "$${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}"
+        : "$${CONSOLE_ACCESS_KEY:?CONSOLE_ACCESS_KEY is required}"
+        : "$${CONSOLE_SECRET_KEY:?CONSOLE_SECRET_KEY is required}"
+        echo "console-init: waiting for MinIO at http://minio:9000 ..."
+        until mc alias set minio http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+          sleep 2
+        done
+        mc admin user add minio "$$CONSOLE_ACCESS_KEY" "$$CONSOLE_SECRET_KEY" >/dev/null
+        echo "console-init: ensured user '$$CONSOLE_ACCESS_KEY'"
+        mc admin policy attach minio consoleAdmin --user "$$CONSOLE_ACCESS_KEY" >/dev/null 2>&1 \
+          || echo "console-init: policy 'consoleAdmin' already attached to '$$CONSOLE_ACCESS_KEY'"
+        echo "console-init: done — '$$CONSOLE_ACCESS_KEY' has policy 'consoleAdmin'"
     restart: "no"
 
   # ---------------------------------------------------------------------------

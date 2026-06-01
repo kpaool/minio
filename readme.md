@@ -66,8 +66,10 @@ Switching an app from R2 to this is usually just changing the endpoint URL and k
 You log into the console as a dedicated **non-root** admin user, not as root. The
 `console-init` service handles this for you: on every `docker compose up` it waits
 for MinIO to be healthy, then creates/updates the user from `.env` and attaches
-MinIO's built-in `consoleAdmin` policy (full admin), then exits. Logic lives in
-`bootstrap.sh`.
+MinIO's built-in `consoleAdmin` policy (full admin), then exits. The provisioning
+script is **inlined in the `console-init` service** (in `docker-compose.yml`) — it
+travels with the compose file, so there's nothing to mount or misplace when
+deploying to a remote host or PaaS like Coolify.
 
 Configure it in `.env`:
 
@@ -82,7 +84,8 @@ CONSOLE_SECRET_KEY=your-long-random-secret   # openssl rand -hex 24
   secret blocks the console instead of silently falling back to root. To log in as
   root instead, remove the `console-init` service and its `depends_on` entry.
 - **Least privilege:** for a restricted console user, create your own policy with
-  `mc admin policy create` and point `POLICY` in `bootstrap.sh` at it.
+  `mc admin policy create` and swap `consoleAdmin` in the `console-init` command
+  (in `docker-compose.yml`) for it.
 
 > Root credentials (`MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`) are now only used to
 > bootstrap that user — keep them strong and private. Note MinIO reads root creds
